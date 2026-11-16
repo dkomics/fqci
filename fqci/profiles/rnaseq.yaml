@@ -1,0 +1,24 @@
+name: rnaseq
+extends: base
+description: Bulk RNA-seq (random-hexamer primed), for alignment and quantification.
+params:
+  cut_q: 15                # mild 3' trimming only; aligners soft-clip the rest
+  dedup_fail: 20
+  dedup_warn: 40
+base_actions: {}
+patch:
+  COMP_START:
+    expected: true
+    expected_note: Random-hexamer priming bias in the first ~12 bases is normal. Do not crop it.
+  DUPLICATION:
+    expected: true
+    expected_note: Highly expressed genes produce real duplicates. Do not deduplicate without UMIs.
+  QUAL_TAIL:
+    advice: >-
+      Modern aligners soft-clip low-quality ends. Aggressive quality trimming can bias
+      quantification, so keep to adapter removal plus a mild threshold.
+  GC_SHIFT:
+    expected: true
+    expected_note: Transcriptome GC differs from genome GC.
+  COVERAGE:
+    levels: {}

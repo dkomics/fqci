@@ -1,0 +1,50 @@
+name: wgs_isolate
+extends: base
+description: >-
+  Bacterial isolate whole-genome sequencing (TruSeq/Nextera-type, random fragmentation),
+  for de novo assembly, SNP typing, AMR/virulence gene detection.
+params:
+  min_len_frac: 0.5        # with the 50 bp cap: 101 bp -> 50, 151 bp -> 50, 76 bp -> 38
+  cut_q: 20
+  dup_ratio_fail: 0.6      # observed / depth-expected deduplicated %
+  dup_ratio_warn: 0.8
+base_actions:              # light trimming is standard for assembly/SNP workflows
+  cut_tail: true
+  cut_window_size: 4
+  cut_mean_quality: "{cut_q}"
+patch:
+  DUPLICATION:             # fixed thresholds only when no genome size is given
+    levels:
+      fail: "no_genome_size and dedup_pct < dedup_fail"
+      warn: "no_genome_size and dedup_pct < dedup_warn"
+    explain: >-
+      Only {dedup_pct:.1f}% of sequences would remain after deduplication; {pct_seq_dup_gt100:.1f}%
+      of reads are in sequences seen more than 100 times. Give --genome-size to judge this
+      against the duplication expected from depth alone.
+  GC_MODES:
+    advice: >-
+      An isolate should give one GC peak. Screen with Kraken2 or Mash; a second peak is
+      contamination or a mixed culture, and trimming will not remove it.
+rules:
+  - id: DUPLICATION_DEPTH
+    scope: read
+    title: Duplication beyond what depth explains
+    levels:
+      fail: "dedup_ratio < dup_ratio_fail"
+      warn: "dedup_ratio < dup_ratio_warn"
+      info: "dedup_ratio >= dup_ratio_warn and dedup_pct < dedup_warn"
+    explain: >-
+      {dedup_pct:.1f}% of sequences would remain after deduplication. At {reads_per_start:.2f}
+      reads per possible start position, random start-position collisions alone would leave
+      about {dedup_expected:.1f}%, so observed/expected = {dedup_ratio:.2f} (1.0 means all
+      duplication is explained by depth). {pct_seq_dup_gt100:.1f}% of reads are in sequences seen more than 100 times.
+    cause: >-
+      An excess points to PCR over-amplification or low library complexity. Duplication close to
+      the expected value is simply a consequence of deep sequencing of a small genome.
+    fixable: false
+    advice: >-
+      Do not deduplicate raw reads. Mark duplicates after alignment (samtools markdup) when calling
+      variants.
+notes:
+  - Pass --genome-size (e.g. 4.03e6 for V. cholerae) to get a depth estimate.
+  - Pass --expected-gc (e.g. 47.5 for V. cholerae) to check the mean GC.

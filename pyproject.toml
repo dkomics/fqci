@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fqci"
+dynamic = ["version"]
+description = "Profile-aware interpretation of FastQC reports with fastp trimming recommendations"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Davis Kuchaka", email = "klay.py@gmail.com"}]
+requires-python = ">=3.9"
+dependencies = ["pyyaml>=5.4"]
+keywords = ["fastqc", "fastp", "quality control", "sequencing", "bioinformatics", "illumina"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/dkomics/fqci"
+Issues = "https://github.com/dkomics/fqci/issues"
+Changelog = "https://github.com/dkomics/fqci/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+fqci = "fqci.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fqci", "fqci.*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "fqci.__version__"}
+
+[tool.setuptools.package-data]
+fqci = ["profiles/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

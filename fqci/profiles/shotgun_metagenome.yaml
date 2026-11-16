@@ -1,0 +1,29 @@
+name: shotgun_metagenome
+extends: base
+description: Shotgun metagenomic short reads (stool, environmental), for profiling and assembly.
+params:
+  dedup_fail: 30           # dominant taxa make duplication look high
+  dedup_warn: 50
+  min_len_frac: 0.5
+base_actions:
+  cut_tail: true
+  cut_window_size: 4
+  cut_mean_quality: "{cut_q}"
+  low_complexity_filter: true
+patch:
+  GC_MODES:
+    levels: {info: "gc_modes >= 2"}
+    expected: true
+    expected_note: A multimodal GC distribution is expected; each peak is a group of taxa with similar GC.
+  GC_SHIFT:
+    expected: true
+    expected_note: Community GC has no single expected value.
+  DUPLICATION:
+    expected: true
+    expected_note: >-
+      Abundant taxa produce real duplicates. Deduplicate only if PCR duplication is known to be
+      the cause.
+  COVERAGE:
+    levels: {}
+notes:
+  - Remove host reads (e.g. minimap2/bowtie2 against GRCh38) after trimming, before profiling.

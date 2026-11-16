@@ -1,0 +1,32 @@
+name: amplicon
+extends: base
+description: Targeted amplicon sequencing (16S/ITS, tiled viral amplicons).
+params:
+  min_len_floor: 50
+base_actions: {}
+patch:
+  DUPLICATION:
+    expected: true
+    expected_note: Amplicon reads are near-identical by design. Never deduplicate.
+  OVERREP_OTHER:
+    expected: true
+    expected_note: Expected; the overrepresented sequences are the amplicons.
+  COMP_BODY:
+    expected: true
+    expected_note: Low-diversity libraries give per-base imbalance (a PhiX spike-in mitigates it).
+  COMP_START:
+    expected: true
+    expected_note: Primer sequence at the start of every read.
+  GC_MODES:
+    levels: {info: "gc_modes >= 2"}
+    expected: true
+    expected_note: Expected for a few distinct amplicons.
+  QUAL_TAIL:
+    actions: {}
+    advice: >-
+      Avoid sliding-window trimming when reads must still overlap for merging (DADA2). Choose
+      truncation lengths from the quality curve instead.
+  COVERAGE:
+    levels: {}
+notes:
+  - Remove primers with cutadapt (-g/-G with the primer sequences, --discard-untrimmed) before denoising.

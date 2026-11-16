@@ -1,0 +1,314 @@
+name: base
+description: Universal rules for Illumina short-read FastQC output. Not used directly; profiles extend it.
+
+params:
+  min_len_floor: 36        # absolute minimum read length kept after trimming
+  min_len_frac: 0.35       # ... or this fraction of the raw read length, whichever is larger,
+  min_len_cap: 50          # ... but never more than this (reads >= 50 bp map and assemble well)
+  cut_q: 20                # sliding-window mean quality for 3' trimming
+  dimer_fail: 10           # % of pairs that are adapter dimers
+  dimer_warn: 1
+  dedup_fail: 50           # FastQC 'Total Deduplicated Percentage'
+  dedup_warn: 70
+  min_cov_fail: 20
+  min_cov_warn: 50
+  gc_tolerance: 3          # %GC deviation from expected_gc tolerated
+  depth_factor: 0.8        # real median depth / read-count estimate (median 0.78 on a 24-sample
+  depth_factor_low: 0.7    #   2x151 MiSeq M. tuberculosis run; 0.72 where the estimate was <30x)
+  depth_low_cutoff: 30     # read-count estimates below this use depth_factor_low
+  low_input_gc_drop: 2     # %GC below expected that, with low depth, suggests low-input GC bias
+  trim_loss_allowance: 8   # % of reads trimming may remove beyond the predicted dimer loss
+
+default_purpose: assembly
+purposes:                  # --purpose sets depth thresholds by what the reads are for
+  assembly: {min_cov_warn: 50, min_cov_fail: 20}
+  mapping: {min_cov_warn: 30, min_cov_fail: 15}
+
+rules:
+  # ------------------------------------------------------------------ pair level
+  - id: ADAPTER_DIMER
+    scope: pair
+    title: Adapter dimers (zero-length inserts)
+    levels:
+      fail: "pair_dimer_pct >= dimer_fail"
+      warn: "pair_dimer_pct >= dimer_warn"
+    explain: >-
+      About {pair_dimer_pct:.1f}% of read pairs are adapter dimers (R1 {r1_dimer_pct:.1f}%, R2
+      {r2_dimer_pct:.1f}% as overrepresented sequences; R2 dimer mates are noisy, so they rarely
+      form identical sequences and show up instead among the {r2_pct_reads_meanq_lt20:.1f}% of R2
+      reads with mean quality below Q20). These reads begin at the adapter junction
+      (GATCGGAAGAGC...), so FastQC's Adapter Content module, which searches for AGATCGGAAGAG,
+      under-reports them (max {adapter_max_any:.2f}%).
+    cause: >-
+      Library prep: too little input DNA or incomplete bead clean-up after adapter ligation, so
+      self-ligated adapters were amplified and sequenced. Sequencing capacity was spent on reads
+      with no insert.
+    fixable: true
+    explains: [QUAL_TAIL, QUAL_LOW_READS, QUAL_START, COMP_BODY, DUPLICATION, DUPLICATION_DEPTH,
+               POLYA, POLYG, TILE,
+               GC_SHIFT, GC_MODES, OVERREP_OTHER]
+    actions:
+      adapter_sequence: "{adapter_r1}"
+      adapter_sequence_r2: "{adapter_r2}"
+      detect_adapter_for_pe: true
+      length_required: "{min_len}"
+    advice: >-
+      Trimming removes them; it cannot recover the lost yield. For future libraries, tighten the
+      post-ligation bead clean-up (e.g. 0.8x) or check input quantity. Treat the quality,
+      composition, duplication and poly-A failures marked as secondary below as provisional:
+      re-run FastQC on the trimmed reads and interpret again.
+
+  - id: PAIR_COUNT_MISMATCH
+    scope: pair
+    title: R1/R2 read counts differ
+    levels:
+      fail: "r1_n_reads != r2_n_reads"
+    explain: "R1 has {r1_n_reads} reads, R2 has {r2_n_reads}."
+    cause: Truncated download/transfer or files from different runs.
+    fixable: false
+    advice: Re-transfer the files and verify checksums before trimming; paired tools will fail or mispair.
+
+  - id: COVERAGE
+    scope: pair
+    title: Estimated usable depth
+    levels:
+      fail: "est_coverage < min_cov_fail"
+      warn: "est_coverage < min_cov_warn"
+      info: "est_coverage >= min_cov_warn"
+    explain: >-
+      About {usable_pairs:,.0f} {unit} remain after removing dimers. At a mean read length of
+      {mean_len_used:.0f} bp, that is {est_coverage_raw:.0f}x of sequence over a
+      {genome_size_mb:.2f} Mb genome. Expected median depth after mapping is about
+      {est_coverage:.0f}x (x{depth_factor_used}; real depth is lower because coverage is uneven
+      and some reads do not map). Thresholds are for {purpose} ({min_cov_warn}x warn,
+      {min_cov_fail}x fail).
+    cause: Yield per sample, minus dimer loss.
+    fixable: false
+    advice: "Below the profile threshold ({min_cov_warn}x) de novo assembly and SNP calling lose sensitivity; consider topping up the sample."
+
+  - id: LOW_INPUT_GC_BIAS
+    scope: pair
+    title: Low yield with GC below expected (possible low-input bias)
+    levels:
+      warn: "expected_gc is not None and est_coverage < min_cov_warn and expected_gc - r1_gc >= low_input_gc_drop"
+    explain: >-
+      Mean GC is {r1_gc:.0f}% against an expected {expected_gc}%, in a sample with only about
+      {est_coverage:.0f}x expected depth.
+    cause: >-
+      Low-input libraries under-amplify GC-rich fragments. Average depth then overstates depth in
+      GC-rich regions, which are often the regions that matter (e.g. rpoB in M. tuberculosis).
+    fixable: false
+    advice: >-
+      Do not rely on average depth: after mapping, check depth over the regions your analysis
+      depends on, and treat "variant absent" calls there with caution. Contamination can give the
+      same GC shift, so check the mapping rate too.
+
+  - id: INDEX_SEEN
+    scope: pair
+    title: Index observed in adapter read-through
+    levels:
+      info: "r1_observed_i7 is not None"
+    explain: "The i7 index read out of the dimers is {r1_observed_i7} ({r1_observed_index_name})."
+    cause: Adapter dimers carry the sample's own index.
+    fixable: false
+    advice: Check it against the sample sheet. A mismatch points to a sample swap or demultiplexing error.
+
+  # ------------------------------------------------------------------ read level
+  - id: ENCODING
+    scope: read
+    title: Non-Sanger quality encoding
+    levels:
+      fail: "phred64"
+    explain: "Encoding reported as '{encoding}'."
+    cause: Old Illumina pipeline (<1.8) output.
+    fixable: true
+    actions: {phred64: true}
+
+  - id: ADAPTER_READTHROUGH
+    scope: read
+    title: Adapter read-through (short inserts)
+    levels:
+      fail: "adapter_max_pct >= 10"
+      warn: "adapter_max_pct >= 1"
+    explain: >-
+      {adapter_top} reaches {adapter_max_pct:.1f}% by the read end; it passes 1% at position
+      {adapter_onset_1pct}.
+    cause: Inserts shorter than the read length.
+    fixable: true
+    actions: {detect_adapter_for_pe: true, length_required: "{min_len}"}
+
+  - id: QUAL_TAIL
+    scope: read
+    title: 3' quality decline
+    levels:
+      fail: "q_drop_lq20 is not None and q_drop_lq20 < 0.5 * read_len"
+      warn: "q_drop_lq20 is not None"
+    explain: >-
+      The lower quartile stays below Q20 from position {q_drop_lq20} (10th percentile from
+      {q_drop_p10_20}); median at the last base is Q{q_median_last:.0f}.
+    cause: Normal phasing/signal decay; often sharpened by a sub-population of failed reads.
+    fixable: true
+    actions: {cut_tail: true, cut_window_size: 4, cut_mean_quality: "{cut_q}",
+              length_required: "{min_len}"}
+    advice: >-
+      Use 3' sliding-window trimming (cut_tail) rather than a fixed crop: it trims each read's
+      own poor tail. Avoid cut_right, which cuts at the first low-quality window anywhere in the
+      read; on a 2x151 MiSeq run it discarded 34-41% of pairs against 1% for cut_tail.
+
+  - id: QUAL_START
+    scope: read
+    title: Low quality from the first cycles
+    levels:
+      warn: "q_lq_first10_min < 20"
+    explain: "The lower quartile falls to Q{q_lq_first10_min:.0f} within the first 10 bases."
+    cause: >-
+      Usually a sub-population of reads that are poor along their whole length (failed clusters
+      or dimer mates), not a 5' chemistry problem.
+    fixable: true
+    advice: >-
+      A fixed 5' crop would not help here. fastp's default whole-read quality filter (more than
+      40% of bases below Q15 fails the read) removes these reads; no extra option is needed.
+
+  - id: QUAL_LOW_READS
+    scope: read
+    title: Reads with low mean quality
+    levels:
+      fail: "pct_reads_meanq_lt20 >= 15"
+      warn: "pct_reads_meanq_lt20 >= 5"
+    explain: "{pct_reads_meanq_lt20:.1f}% of reads have mean quality below Q20."
+    cause: Failed clusters, bubbles, or adapter-dimer mates in R2.
+    fixable: true
+    advice: >-
+      fastp's default whole-read quality filter removes these reads; no extra option is needed.
+
+  - id: TILE
+    scope: read
+    title: Tile-specific quality loss
+    levels:
+      fail: "pct_tiles_dev10 >= 5"
+      warn: "pct_tiles_dev5 >= 5"
+    explain: >-
+      {pct_tiles_dev5:.1f}% of {n_tiles} tiles drop at least 5 below the run average at some
+      cycle (worst {tile_worst_dev:.1f}).
+    cause: Flowcell surface problem (bubble, debris, edge effects).
+    fixable: false
+    advice: >-
+      Trimming does not fix this. If it is severe, remove the affected tiles with
+      bbduk.sh filterbytile=t, or raise it with the sequencing provider.
+
+  - id: COMP_START
+    scope: read
+    title: Composition bias in the first 12 bases only
+    levels:
+      info: "comp_bias_start >= 10 and comp_bias_body < 10"
+    explain: "Up to {comp_bias_start:.0f}% A/T or G/C imbalance in bases 1-12; the rest of the read is balanced."
+    cause: Fragmentation or priming bias (transposase, random hexamers).
+    fixable: false
+    advice: This is normal for many preps. Do not crop it unless downstream k-mer tools are affected.
+
+  - id: COMP_BODY
+    scope: read
+    title: Composition bias along the read
+    levels:
+      fail: "comp_bias_body >= 20"
+      warn: "comp_bias_body >= 10"
+    explain: "Up to {comp_bias_body:.0f}% A/T or G/C imbalance after base 12."
+    cause: >-
+      An overrepresented sequence such as adapter dimers, PhiX or a dominant amplicon, or a
+      low-diversity library.
+    fixable: false
+
+  - id: COMP_END
+    scope: read
+    title: Composition bias in the last cycles only
+    levels:
+      warn: "comp_bias_end >= 10 and comp_bias_body < 10"
+    explain: >-
+      Up to {comp_bias_end:.0f}% A/T or G/C imbalance in the last two cycles; the read body is
+      balanced.
+    cause: >-
+      The final cycle of an odd-length run (e.g. the 151st of 2x151) has skewed base calls. This is
+      a sequencing artefact, not the sample.
+    fixable: true
+    actions: {trim_tail1: 1, trim_tail2: 1}
+    advice: Removing the last base is enough; there is no need to crop further.
+
+  - id: GC_MODES
+    scope: read
+    title: Multimodal GC distribution
+    levels:
+      fail: "gc_modes >= 2"
+    explain: "{gc_modes} GC peaks, at about {gc_mode_positions}% GC."
+    cause: >-
+      A mixture of genomes. For an isolate this means contamination or a mixed culture; for a
+      metagenome it is expected.
+    fixable: false
+    advice: Screen with Kraken2/Mash before assembly.
+
+  - id: GC_SHIFT
+    scope: read
+    title: Mean GC differs from the expected genome
+    levels:
+      warn: "expected_gc is not None and abs(gc - expected_gc) > gc_tolerance"
+    explain: "Mean GC {gc:.0f}% against an expected {expected_gc}%."
+    cause: >-
+      Contamination; skew from adapter or overrepresented sequences; or, in low-yield libraries,
+      amplification bias against GC-rich fragments. Check the mapping rate to the reference.
+    fixable: false
+
+  - id: N_CONTENT
+    scope: read
+    title: N calls
+    levels:
+      fail: "n_max_pct >= 20"
+      warn: "n_max_pct >= 5"
+    explain: "Up to {n_max_pct:.1f}% N at a single position."
+    cause: Calling failure at specific cycles.
+    fixable: true
+    advice: fastp's default (reads with more than 5 N are discarded) handles this; no extra option is needed.
+
+  - id: DUPLICATION
+    scope: read
+    title: Sequence duplication
+    levels:
+      fail: "dedup_pct < dedup_fail"
+      warn: "dedup_pct < dedup_warn"
+    explain: >-
+      Only {dedup_pct:.1f}% of sequences would remain after deduplication; {pct_seq_dup_gt100:.1f}%
+      of reads are in sequences seen more than 100 times.
+    cause: PCR over-amplification, low library complexity, or a few very abundant sequences.
+    fixable: false
+    advice: >-
+      Do not deduplicate raw reads by default. Mark duplicates after alignment
+      (samtools markdup) when calling variants.
+
+  - id: POLYG
+    scope: read
+    title: Poly-G tails
+    levels:
+      warn: "polyg_pct >= 1 or overrep_polyg_pct >= 0.5"
+    explain: "Poly-G reaches {polyg_pct:.1f}% at the read end."
+    cause: On 2-colour chemistry (NextSeq/NovaSeq/iSeq), no signal is called as G.
+    fixable: true
+    actions: {trim_poly_g: true}
+
+  - id: POLYA
+    scope: read
+    title: Poly-A tails
+    levels:
+      warn: "polya_pct >= 5"
+    explain: "Poly-A reaches {polya_pct:.1f}% at the read end."
+    cause: Run-off past the end of short or empty templates, or a real poly-A tail in RNA-seq.
+    fixable: true
+    actions: {trim_poly_x: true}
+
+  - id: OVERREP_OTHER
+    scope: read
+    title: Non-adapter overrepresented sequences
+    levels:
+      warn: "overrep_other_pct >= 1"
+      info: "overrep_other_pct >= 0.1"
+    explain: "{overrep_other_pct:.2f}% of reads are overrepresented sequences that do not match an adapter."
+    cause: rRNA, PhiX, plasmid or phage, a contaminant, or dimer reads with sequencing errors.
+    fixable: false
+    advice: BLAST the top sequences (listed in the JSON output) to identify them.
