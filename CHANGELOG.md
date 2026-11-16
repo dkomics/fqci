@@ -3,6 +3,14 @@
 This project follows [Semantic Versioning](https://semver.org/). Versions below 1.0 may change
 the command-line interface, profile format or outputs between minor releases.
 
+## Unreleased (0.3.0.dev0)
+
+- Optional AI summary (`--ai-summary`): plain-language summaries per sample and for the run, from
+  a fixed, versioned prompt (`findings_v1`), using the Anthropic API (`pip install "fqci[ai]"`).
+  Advisory only: rule-based findings stay authoritative. Replies are schema-checked, cited rule
+  IDs are verified, unverifiable numbers are flagged, `--anonymise` keeps sample names local, and
+  the exact request is saved. Without the flag fqci makes no network calls.
+
 ## 0.2.0 (2026-11-16)
 
 - HTML report (`fqci_report.html`), written by `fqci interpret` next to the Markdown report:

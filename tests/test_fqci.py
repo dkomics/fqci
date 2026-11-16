@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from fqci import ai_summary as A
 from fqci import metrics, parser
 from fqci.cli import main
 from fqci.compare import compare
@@ -877,3 +878,200 @@ def test_html_findings_controls():
     assert 'data-filter="ALL"' in page and 'data-filter="FAIL"' in page and 'data-filter="PASS"' in page
     assert 'data-filter="WARN"' not in page          # only verdicts present in the run get a chip
     assert 'data-level="FAIL"' in page and 'data-level="PASS"' in page
+
+
+# ================================================================ AI summary (no network: fake provider)
+class FakeProvider:
+    name, model = "fake", "fake-model-1"
+
+    def __init__(self, reply=None):
+        self.reply, self.calls = reply, []
+
+    def generate(self, system, user, schema, max_tokens):
+        self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
+        payload = _json.loads(user.split("\n\n", 1)[1])
+        if self.reply is not None:
+            return (self.reply(payload) if callable(self.reply) else self.reply), {"model": self.model}
+        samples = [{"id": s["id"], "summary": f"{s['id']} verdict is {s['verdict']}.",
+                    "rule_ids": [f["rule_id"] for f in s["findings"] if f["category"] == "primary"][:2],
+                    "next_steps": ["Run the recommended fastp command."]} for s in payload["samples"]]
+        return _json.dumps({"run_summary": "One run.", "samples": samples}), {"model": self.model,
+                                                                               "input_tokens": 1, "output_tokens": 1}
+
+
+def _two_samples():
+    prof = load_profile("wgs_isolate")
+    return [interpret_sample("lowdepth_S1", _pair("lowdepth_S1", n=100000), prof, genome_size=4.41e6),
+            interpret_sample("clean_S2", _pair("clean_S2", n=1500000, end_bias=False), prof, genome_size=4.41e6)], prof
+
+
+def test_ai_prompt_ships_and_is_versioned():
+    text, name, h = A.load_prompt()
+    assert name == "findings_v1" and len(h) == 12 and "authoritative" in text
+
+
+def test_ai_payload_contains_findings_not_files():
+    res, prof = _two_samples()
+    payload, ids = A.build_payload(res, prof, 4.41e6, None)
+    s = payload["samples"][0]
+    assert s["id"] == "lowdepth_S1" and s["findings"] and "fastp_options" in s
+    assert "_R1_001.fastq.gz" not in _json.dumps(payload)  # file names are never sent
+
+
+def test_ai_anonymise_hides_names_everywhere():
+    res, prof = _two_samples()
+    payload, ids = A.build_payload(res, prof, 4.41e6, None, anonymise=True)
+    blob = _json.dumps(payload)
+    assert "lowdepth_S1" not in blob and "clean_S2" not in blob
+    assert ids == {"S01": "lowdepth_S1", "S02": "clean_S2"}
+
+
+def test_ai_summarise_with_fake_provider_and_deanonymise():
+    res, prof = _two_samples()
+    fp = FakeProvider()
+    ai, payload = A.summarise(res, prof, fp, genome_size=4.41e6, anonymise=True)
+    assert set(ai.samples) == {"lowdepth_S1", "clean_S2"}
+    assert ai.samples["lowdepth_S1"].summary.startswith("lowdepth_S1 verdict")  # names restored locally
+    assert "lowdepth_S1" not in fp.calls[0]["user"]                             # but never sent
+    assert ai.record["prompt"] == "findings_v1" and ai.record["anonymised"] is True
+    assert fp.calls[0]["schema"] == A.OUTPUT_SCHEMA
+
+
+def test_ai_validation_flags_and_filters():
+    res, prof = _two_samples()
+    payload, ids = A.build_payload(res, prof, 4.41e6, None)
+    reply = _json.dumps({"run_summary": "Depth was 999x overall.", "samples": [
+        {"id": "lowdepth_S1", "summary": "Only 4 x coverage, about 12345 reads.", "rule_ids": ["COVERAGE", "MADE_UP"],
+         "next_steps": ["a", "b", "c", "d"]},
+        {"id": "ghost", "summary": "x", "rule_ids": [], "next_steps": []}]})
+    rs, samples, warns = A.validate(reply, payload, ids)
+    s = samples["lowdepth_S1"]
+    assert s.rule_ids == ["COVERAGE"] and len(s.next_steps) == 3
+    assert any("MADE_UP" in w for w in s.warnings) and any("12345" in w for w in s.warnings)
+    assert any("unknown sample id 'ghost'" in w for w in warns)
+    assert any("no AI summary returned for: clean_S2" in w for w in warns)
+    assert any("999" in w for w in warns)
+
+
+def test_ai_numbers_from_input_are_accepted():
+    res, prof = _two_samples()
+    payload, ids = A.build_payload(res, prof, 4.41e6, None)
+    depth = payload["samples"][1]["metrics"]["expected_depth_x"]
+    reads = payload["samples"][1]["metrics"]["reads_or_pairs"]
+    reply = _json.dumps({"run_summary": "ok", "samples": [
+        {"id": "clean_S2", "summary": f"About {depth:.0f}x from {reads:,} pairs; 2 of 2 checks.", "rule_ids": [],
+         "next_steps": []}, {"id": "lowdepth_S1", "summary": "Low.", "rule_ids": [], "next_steps": []}]})
+    _, samples, warns = A.validate(reply, payload, ids)
+    assert samples["clean_S2"].warnings == [] and not any("numbers" in w for w in warns)
+
+
+def test_ai_bad_reply_raises():
+    res, prof = _two_samples()
+    for bad in ("not json", _json.dumps({"samples": "x"})):
+        with pytest.raises(A.AIError):
+            A.summarise(res, prof, FakeProvider(reply=bad))
+
+
+def test_ai_html_and_markdown_sections():
+    from fqci.html_report import to_html
+    res, prof = _two_samples()
+    ai, _ = A.summarise(res, prof, FakeProvider(reply=lambda p: _json.dumps({
+        "run_summary": "<b>run</b>", "samples": [{"id": s["id"], "summary": "<script>x</script>",
+                                                  "rule_ids": [], "next_steps": []} for s in p["samples"]]})))
+    page = to_html(res, prof, "t", ai=ai)
+    assert page.count("AI summary · generated, advisory") == 3   # run box + one per sample
+    assert "<script>x</script>" not in page and "&lt;script&gt;x" in page
+    assert "fake / fake-model-1" in page
+    md = A.to_markdown(ai)
+    assert md.startswith("## AI summary (generated; verify") and "### lowdepth_S1" in md
+    page2 = to_html(res, prof, "t", ai_error="ANTHROPIC_API_KEY is not set")
+    assert "Requested but not generated: ANTHROPIC_API_KEY is not set" in page2
+
+
+def test_ai_cli_without_key_still_writes_reports(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    out = tmp_path / "o"
+    assert main(["interpret", str(D / "raw"), "-o", str(out), "--ai-summary"]) == 0
+    assert "AI summary not generated" in capsys.readouterr().err
+    assert (out / "fqci_report.html").exists() and not (out / "fqci_ai_summary.json").exists()
+    assert "Requested but not generated" in (out / "fqci_report.md").read_text()
+
+
+def test_ai_cli_with_fake_provider(tmp_path, monkeypatch):
+    monkeypatch.setitem(A.PROVIDERS, "fake", lambda model=None: FakeProvider())
+    out = tmp_path / "o"
+    assert main(["interpret", str(D / "raw"), "-o", str(out), "--ai-summary", "--ai-provider", "fake",
+                 "--anonymise"]) == 0
+    sent = _json.loads((out / "fqci_ai_request.json").read_text())
+    assert sent["samples"][0]["id"] == "S01"
+    summary = _json.loads((out / "fqci_ai_summary.json").read_text())
+    assert summary["record"]["provider"] == "fake" and "sim" in summary["samples"]
+    assert "AI summary · generated, advisory" in (out / "fqci_report.html").read_text()
+
+
+def test_ai_unknown_provider():
+    with pytest.raises(A.AIError, match="unknown AI provider"):
+        A.get_provider("nope")
+
+
+# ---- real Anthropic SDK against a local stand-in server (checks the request we send)
+def test_anthropic_provider_request_shape(monkeypatch):
+    pytest.importorskip("anthropic")
+    import http.server
+    import threading
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers["content-length"])
+            auth = self.headers.get("authorization", "")  # newer SDKs: Bearer; older: x-api-key
+            seen["path"] = self.path
+            seen["key"] = self.headers.get("x-api-key") or (auth[7:] if auth.startswith("Bearer ") else None)
+            seen["body"] = _json.loads(self.rfile.read(n))
+            p = _json.loads(seen["body"]["messages"][0]["content"].split("\n\n", 1)[1])
+            reply = {"run_summary": "ok", "samples": [{"id": s["id"], "summary": "fine", "rule_ids": [],
+                                                       "next_steps": []} for s in p["samples"]]}
+            body = _json.dumps({"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+                                "content": [{"type": "text", "text": _json.dumps(reply)}],
+                                "stop_reason": "end_turn", "stop_sequence": None,
+                                "usage": {"input_tokens": 123, "output_tokens": 45}}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{srv.server_port}")
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    try:
+        res, prof = _two_samples()
+        ai, _ = A.summarise(res, prof, A.get_provider("anthropic"))
+    finally:
+        srv.shutdown()
+    b = seen["body"]
+    assert seen["path"] == "/v1/messages" and seen["key"] == "test-key"
+    assert b["model"] == "claude-sonnet-5-5" and "authoritative" in b["system"]
+    assert b["output_config"]["format"]["type"] == "json_schema"
+    assert b["output_config"]["format"]["schema"] == A.OUTPUT_SCHEMA
+    assert "temperature" not in b  # Sonnet 5 models reject non-default sampling settings
+    assert ai.record["input_tokens"] == 123 and set(ai.samples) == {"lowdepth_S1", "clean_S2"}
+
+
+def test_anthropic_provider_stop_reason(monkeypatch):
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    prov = A.AnthropicProvider()
+
+    class R:
+        stop_reason, content, model, usage = "max_tokens", [], "m", None
+    monkeypatch.setattr(prov._client.messages, "create", lambda **kw: R())
+    with pytest.raises(A.AIError, match="stopped early"):
+        prov.generate("s", "u", {}, 10)

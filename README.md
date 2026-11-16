@@ -60,6 +60,34 @@ filter (FAIL / WARN / PASS) make large runs easy to work through. The file has n
 resources, so it can be emailed or archived; it follows the system dark mode and prints with
 every section expanded.
 
+## AI summary (optional, advisory)
+
+`--ai-summary` adds a plain-language summary for each sample and for the run, written by a
+language model from fqci's own output. It is off by default; without it fqci makes no network
+calls. The rule-based findings, verdicts and fastp commands stay authoritative and are never
+changed by the AI.
+
+```bash
+pip install "fqci[ai]"                 # adds the Anthropic SDK
+export ANTHROPIC_API_KEY=...           # your API key
+fqci interpret qc_raw/ -p wgs_isolate --genome-size 4.03e6 --ai-summary --anonymise -o fqci_out
+```
+
+- **What is sent:** metrics, findings, verdicts and fastp options in JSON, never reads or file
+  names. `--anonymise` replaces sample names with S01, S02, ... before sending. The exact request
+  is saved as `fqci_ai_request.json`.
+- **The prompt** is fixed and versioned (`fqci/prompts/findings_v1.md`); `--ai-prompt FILE`
+  uses your own. Model: `claude-sonnet-5-5` by default (`--ai-model` to change).
+- **Checks on the reply:** it must match a JSON schema; rule IDs it cites must exist in that
+  sample's findings (others are removed); numbers it quotes must appear in the input (others are
+  flagged "verify before use" in the report).
+- **Output:** a labelled box above the findings of each sample in the HTML report, a run-level
+  box under the run summary, a section in the Markdown report, and `fqci_ai_summary.json` with
+  the record (provider, model, prompt name and hash, date, token use).
+- If the summary cannot be produced (no key, no network, API error), fqci says why and writes the
+  rule-based reports as usual.
+- Treat it as advisory: it is not deterministic and is not part of the QC record.
+
 ## How interpretation works
 
 1. **Metrics** (`metrics.py`): for example, the position from which the per-base lower quartile

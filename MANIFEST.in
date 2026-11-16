@@ -1,3 +1,4 @@
 include README.md CHANGELOG.md LICENSE
 recursive-include fqci/profiles *.yaml
+recursive-include fqci/prompts *.md
 recursive-include tests *.py *.zip *.json

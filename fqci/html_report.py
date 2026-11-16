@@ -11,6 +11,8 @@ import html
 import json
 
 from . import __version__
+from typing import Any
+
 from .interpret import SampleResult
 from .report import run_summary
 from .rules import Profile
@@ -86,6 +88,12 @@ background:var(--surface-1);color:var(--text-primary);cursor:pointer}
 .fqci #tip{position:fixed;pointer-events:none;background:var(--surface-1);color:var(--text-primary);
 border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;display:none;box-shadow:0 2px 8px rgba(0,0,0,.12)}
 .fqci .muted{color:var(--text-muted)}
+.fqci .ai{border:1px dashed var(--series-1);border-radius:8px;padding:10px 14px;margin:10px 0;background:var(--surface-0)}
+.fqci .ai .lab{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+color:var(--series-1);margin-bottom:4px}
+.fqci .ai p{margin:4px 0}
+.fqci .ai .chk{color:var(--text-secondary);font-size:12.5px}
+.fqci .ai .rec{color:var(--text-muted);font-size:12px}
 .fqci .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 10px}
 .fqci .toolbar button{font:inherit;font-size:12.5px;cursor:pointer;border:1px solid var(--border);
 background:var(--surface-1);color:var(--text-primary);border-radius:999px;padding:3px 10px}
@@ -213,7 +221,20 @@ def _finding_html(f, cls: str) -> str:
     return "".join(parts)
 
 
-def _sample_section(r: SampleResult, idx: int) -> str:
+def _ai_box(s: Any) -> str:
+    """Per-sample AI box; s is an ai_summary.SampleSummary."""
+    parts = ['<div class="ai"><span class="lab">AI summary \u00b7 generated, advisory</span>',
+             f"<p>{_e(s.summary)}</p>"]
+    if s.next_steps:
+        parts.append('<ul class="plain">' + "".join(f"<li>{_e(x)}</li>" for x in s.next_steps) + "</ul>")
+    if s.rule_ids:
+        parts.append(f'<p class="chk">Based on: {_e(", ".join(s.rule_ids))}</p>')
+    parts += [f'<p class="chk">Check: {_e(w)}</p>' for w in s.warnings]
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _sample_section(r: SampleResult, idx: int, ai_sample: Any = None) -> str:
     level = _level(r.verdict)
     prim = r.primary()
     first = prim[0].title if prim else ("unassigned reads" if r.undetermined else "no problems found")
@@ -221,6 +242,8 @@ def _sample_section(r: SampleResult, idx: int) -> str:
             f'<span class="why">{_e(r.verdict)} · {_e(first)}</span></summary>')
     body = ['<div class="body">', '<p class="meta">Files: '
             + ", ".join(f"{_e(k)} <code>{_e(v)}</code>" for k, v in r.files.items()) + "</p>"]
+    if ai_sample is not None:
+        body.append(_ai_box(ai_sample))
     if r.undetermined:
         body.append("<p>Reads the demultiplexer could not assign to a sample. Not a sample: no verdict "
                     "or trimming is given; findings are listed for information.</p>")
@@ -256,7 +279,9 @@ def _sample_section(r: SampleResult, idx: int) -> str:
     return f'<details class="sample" id="s{idx}" data-level="{level}">{head}{"".join(body)}</details>'
 
 
-def to_html(results: list[SampleResult], profile: Profile, title: str = "FastQC interpretation") -> str:
+def to_html(results: list[SampleResult], profile: Profile, title: str = "FastQC interpretation",
+            ai: Any = None, ai_error: str | None = None) -> str:
+    """ai: an ai_summary.AISummary (optional); ai_error: why a requested AI summary is missing."""
     real = [r for r in results if not r.undetermined]
     counts = {"FAIL": 0, "WARN": 0, "PASS": 0}
     for r in real:
@@ -294,6 +319,20 @@ def to_html(results: list[SampleResult], profile: Profile, title: str = "FastQC 
         if items:
             para.append('<ul class="plain">' + "".join(items) + "</ul>")
         parts.append('<section class="card"><h2 style="margin-top:0">Run summary</h2>' + "".join(para) + "</section>")
+    if ai is not None:
+        rec = ai.record
+        box = ['<section class="ai"><span class="lab">AI summary \u00b7 generated, advisory</span>',
+               f"<p>{_e(ai.run_summary)}</p>"]
+        box += [f'<p class="chk">Check: {_e(w)}</p>' for w in ai.warnings]
+        box.append(f'<p class="rec">{_e(rec["provider"])} / {_e(rec["model"])} \u00b7 prompt {_e(rec["prompt"])} '
+                   f'({_e(rec["prompt_sha256"])}) \u00b7 {_e(rec["generated"])}'
+                   f'{" · sample names anonymised before sending" if rec.get("anonymised") else ""}. '
+                   "The rule-based findings and verdicts are authoritative; each sample\u2019s AI summary "
+                   "is under Findings by sample.</p></section>")
+        parts.append("".join(box))
+    elif ai_error:
+        parts.append(f'<section class="ai"><span class="lab">AI summary</span><p class="chk">Requested but not '
+                     f"generated: {_e(ai_error)}. The rule-based report below is complete.</p></section>")
 
     # charts
     depth = [(r.sample, r.metrics["pair"]["est_coverage"]) for r in real
@@ -351,7 +390,8 @@ def to_html(results: list[SampleResult], profile: Profile, title: str = "FastQC 
                  '<span class="sep" aria-hidden="true"></span><span class="meta">Show:</span>'
                  '<button type="button" class="chip" data-filter="ALL" aria-pressed="true">All</button>'
                  f'{chips}<span class="meta" id="shown"></span></div>'
-                 + "".join(_sample_section(r, i) for i, r in enumerate(results)))
+                 + "".join(_sample_section(r, i, ai.samples.get(r.sample) if ai is not None else None)
+                           for i, r in enumerate(results)))
     if profile.notes:
         parts.append('<h2>Profile notes</h2><ul class="plain">'
                      + "".join(f"<li>{_e(n)}</li>" for n in profile.notes) + "</ul>")

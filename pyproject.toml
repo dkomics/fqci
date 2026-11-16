@@ -28,6 +28,7 @@ Changelog = "https://github.com/dkomics/fqci/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = ["pytest"]
+ai = ["anthropic>=0.40"]
 
 [project.scripts]
 fqci = "fqci.cli:main"
@@ -39,7 +40,7 @@ include = ["fqci", "fqci.*"]
 version = {attr = "fqci.__version__"}
 
 [tool.setuptools.package-data]
-fqci = ["profiles/*.yaml"]
+fqci = ["profiles/*.yaml", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

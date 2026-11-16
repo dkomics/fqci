@@ -12,6 +12,7 @@ from .interpret import group, interpret_sample, natural_key
 import zipfile
 
 from .parser import discover
+from .ai_summary import to_markdown as ai_md
 from .html_report import to_html
 from .report import to_json, to_markdown
 from .rules import RuleError, available_profiles, load_profile
@@ -71,6 +72,14 @@ def main(argv=None) -> int:
 
     sub.add_parser("profiles", help="list available profiles")
     a.add_argument("--threads", type=int, default=4, help="fastp --thread value in the generated commands")
+    g = a.add_argument_group("AI summary (optional; advisory, needs network and an API key)")
+    g.add_argument("--ai-summary", action="store_true",
+                   help="add a plain-language AI summary per sample and for the run")
+    g.add_argument("--ai-provider", default="anthropic", help="AI provider (default: anthropic)")
+    g.add_argument("--ai-model", help="model ID (default: claude-sonnet-5-5)")
+    g.add_argument("--ai-prompt", help="use this prompt file instead of the built-in one")
+    g.add_argument("--anonymise", action="store_true",
+                   help="replace sample names with S01, S02, ... before sending")
 
     args = ap.parse_args(argv)
     try:
@@ -78,6 +87,23 @@ def main(argv=None) -> int:
     except (RuleError, ValueError, OSError, zipfile.BadZipFile) as e:
         print(f"fqci: error: {e}", file=sys.stderr)
         return 2
+
+
+def _ai(args, res, prof, kw, out):
+    """Run the optional AI summary. Never fails the run: returns (summary or None, error or None)."""
+    from . import ai_summary as A
+    try:
+        provider = A.get_provider(args.ai_provider, args.ai_model)
+        ai, payload = A.summarise(res, prof, provider, anonymise=args.anonymise,
+                                  prompt_path=args.ai_prompt, **kw)
+    except (A.AIError, OSError) as e:
+        print(f"fqci: warning: AI summary not generated: {e}", file=sys.stderr)
+        return None, str(e)
+    (out / "fqci_ai_request.json").write_text(json.dumps(payload, indent=1))  # exactly what was sent
+    (out / "fqci_ai_summary.json").write_text(json.dumps(ai.to_dict(), indent=1))
+    for w in ai.warnings + [w for s in ai.samples.values() for w in s.warnings]:
+        print(f"fqci: AI check: {w}", file=sys.stderr)
+    return ai, None
 
 
 def _run(args) -> int:
@@ -101,9 +127,18 @@ def _run(args) -> int:
                for s, r in sorted(group(reps).items(), key=lambda kv: natural_key(kv[0]))]
         out = Path(args.outdir)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "fqci_report.md").write_text(to_markdown(res, prof, args.title))
+        ai, ai_error = None, None
+        if args.ai_summary:
+            ai, ai_error = _ai(args, res, prof, kw, out)
+        md = to_markdown(res, prof, args.title)
+        if ai is not None:
+            md += "\n" + ai_md(ai) + "\n"
+        elif ai_error:
+            md += f"\n## AI summary\n\nRequested but not generated: {ai_error}\n"
+        (out / "fqci_report.md").write_text(md)
         (out / "fqci_report.json").write_text(to_json(res, prof))
-        (out / "fqci_report.html").write_text(to_html(res, prof, args.title), encoding="utf-8")
+        (out / "fqci_report.html").write_text(to_html(res, prof, args.title, ai=ai, ai_error=ai_error),
+                                              encoding="utf-8")
         real = [r for r in res if not r.undetermined]
         (out / "fastp_commands.sh").write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(r.fastp_command for r in real) + "\n")
