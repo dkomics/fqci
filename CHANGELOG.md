@@ -3,6 +3,15 @@
 This project follows [Semantic Versioning](https://semver.org/). Versions below 1.0 may change
 the command-line interface, profile format or outputs between minor releases.
 
+## 0.2.0 (2026-11-16)
+
+- HTML report (`fqci_report.html`), written by `fqci interpret` next to the Markdown report:
+  verdict tiles, run summary, depth and adapter-dimer charts with thresholds, a sortable sample
+  table, and collapsible findings per sample with Expand all / Collapse all and a FAIL / WARN /
+  PASS filter. Self-contained (no external resources), dark-mode aware, print-friendly; sample
+  names and embedded data are escaped.
+- Requires Python 3.10 or newer (3.9 reached end of life in October 2025). Tests run on 3.10-3.13.
+
 ## 0.1.0 (2026-11-16)
 
 Initial public release.

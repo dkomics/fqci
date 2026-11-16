@@ -3,8 +3,9 @@
 `fqci` reads FastQC output (`*_fastqc.zip` or extracted folders), computes quantitative metrics
 from each module, applies library-type-specific rules written in YAML, and produces:
 
-- a Markdown report that separates primary findings, findings that are probably secondary to a
-  primary problem, and findings that are expected for the library type;
+- a Markdown report and a self-contained HTML report (one file, works offline) that separate
+  primary findings, findings that are probably secondary to a primary problem, and findings that
+  are expected for the library type;
 - a fastp command for each sample, with the reason for every parameter;
 - JSON (full metrics and findings) plus `fastp_params.json`, for use in pipelines;
 - a before/after comparison once you have re-run FastQC on the trimmed reads, which also checks
@@ -18,7 +19,7 @@ Those flags are calibrated for random-shotgun genomic libraries.
 
 ```bash
 git clone https://github.com/dkomics/fqci.git && cd fqci
-pip install .            # needs Python >= 3.9 and PyYAML
+pip install .            # needs Python >= 3.10 and PyYAML
 pip install '.[test]' && pytest -q
 ```
 
@@ -48,6 +49,16 @@ Useful options: `--purpose assembly|mapping` (depth thresholds: 50x/20x or 30x/1
 `--genome-size` in bp and `--expected-gc` (enable depth, duplication-vs-depth and GC checks),
 `--set PARAM=VALUE` (override any profile parameter), `--threads` (fastp `--thread`), and for
 `compare`, `--fastp-dir` (read `<sample>.fastp.json` to explain read losses).
+
+## HTML report
+
+`fqci interpret` also writes `fqci_report.html`: verdict tiles, the run summary, charts of
+expected depth and adapter dimers per sample with threshold lines, a sortable sample table, and
+**Findings by sample**, a collapsible section per sample with its findings, the fastp command
+(with a copy button) and the reason for each option. Expand all / Collapse all and a verdict
+filter (FAIL / WARN / PASS) make large runs easy to work through. The file has no external
+resources, so it can be emailed or archived; it follows the system dark mode and prints with
+every section expanded.
 
 ## How interpretation works
 
@@ -124,9 +135,9 @@ every genomic pair and removes every dimer pair, and every secondary finding cle
   second. The depth factor was calibrated against TB-Profiler's genome median depth (median
   ratio 0.78).
 
-**Tests.** 93 tests cover the parser, metrics, the rule evaluator, every profile and rule, command
-generation (quoting, paired/single-end, input/output names), the CLI and its error handling, and
-`compare`. With fastp on `PATH` a generated command is run end to end. Set
+**Tests.** 99 tests cover the parser, metrics, the rule evaluator, every profile and rule, command
+generation (quoting, paired/single-end, input/output names), the CLI and its error handling,
+`compare`, and the HTML report (well-formed, no external resources, sample names escaped). With fastp on `PATH` a generated command is run end to end. Set
 `FQCI_REAL_DATA=/path/to/zips` to add tests on your own reports. An independent code review was
 done before this release; its findings are fixed and tested.
 

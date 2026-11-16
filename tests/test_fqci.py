@@ -799,3 +799,81 @@ def test_compare_partial_pair(tmp_path):
 def test_python_m_fqci():
     out = _sp.run([_sys.executable, "-m", "fqci", "--version"], capture_output=True, text=True)
     assert out.returncode == 0 and out.stdout.strip() == __import__("fqci").__version__
+
+
+# ================================================================ HTML report
+def _html_of(results, prof=None):
+    from fqci.html_report import to_html
+    return to_html(results, prof or load_profile("wgs_isolate"), "t")
+
+
+def test_html_written_by_cli(tmp_path):
+    out = tmp_path / "o"
+    assert main(["interpret", str(D / "raw"), "-o", str(out), "--genome-size", "4e5"]) == 0
+    page = (out / "fqci_report.html").read_text(encoding="utf-8")
+    assert page.startswith("<!DOCTYPE html>") and "sim" in page and "Adapter dimers" in page
+
+
+def test_html_is_well_formed_and_offline(raw):
+    from html.parser import HTMLParser
+    res = [interpret_sample("sim", group(raw)["sim"], load_profile("wgs_isolate"), genome_size=4e5)]
+    page = _html_of(res)
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.errors, self.ext = [], [], []
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in ("meta", "br", "hr", "img", "input", "link", "path", "line"):
+                self.stack.append(tag)
+            for k, v in attrs:
+                if k in ("src", "href") and v and v.startswith(("http:", "https:", "//")):
+                    self.ext.append(v)
+
+        def handle_endtag(self, tag):
+            if tag in ("path", "line"):
+                return
+            if not self.stack or self.stack.pop() != tag:
+                self.errors.append(tag)
+    p = P()
+    p.feed(page)
+    assert not p.errors and not p.stack, (p.errors, p.stack[-5:])
+    assert not p.ext  # no external resources: works offline and by email
+
+
+def test_html_escapes_sample_names():
+    evil = '<script>alert(1)</script>"x'
+    pair = {1: _miseq151(f"{evil}_R1_001.fastq.gz"), 2: _miseq151(f"{evil}_R2_001.fastq.gz")}
+    page = _html_of([interpret_sample(evil, pair, load_profile("wgs_isolate"))])
+    assert "<script>alert(1)" not in page and "&lt;script&gt;alert(1)" in page
+
+
+def test_html_fixable_tile_counts_only_fixable():
+    import re as _re
+    prof = load_profile("wgs_isolate")
+    res = [interpret_sample("lo", _pair("lo", n=100000), prof, genome_size=4.41e6),      # depth: not fixable
+           interpret_sample("ok", _pair("ok", n=1500000), prof, genome_size=4.41e6)]     # end bias only: fixable
+    assert res[0].verdict.startswith("FAIL; not fixable") and res[1].verdict.endswith(": fixable by trimming")
+    page = _html_of(res, prof)
+    n = _re.search(r'<div class="n">(\d+)</div><div class="l">fixable by trimming', page).group(1)
+    assert n == "1"
+
+
+def test_html_single_end_and_undetermined():
+    prof = load_profile("wgs_isolate")
+    res = [interpret_sample("se", {1: _miseq151("se.fastq.gz")}, prof, genome_size=4.41e6),
+           interpret_sample("Undetermined_S0_L001", _pair("Undetermined_S0_L001"), prof)]
+    page = _html_of(res, prof)
+    assert "Reads the demultiplexer could not assign" in page and "se" in page
+
+
+def test_html_findings_controls():
+    prof = load_profile("wgs_isolate")
+    res = [interpret_sample("lo", _pair("lo", n=100000), prof, genome_size=4.41e6),
+           interpret_sample("ok", _pair("ok", n=1500000, end_bias=False), prof, genome_size=4.41e6)]
+    page = _html_of(res, prof)
+    assert 'data-act="expand"' in page and 'data-act="collapse"' in page
+    assert 'data-filter="ALL"' in page and 'data-filter="FAIL"' in page and 'data-filter="PASS"' in page
+    assert 'data-filter="WARN"' not in page          # only verdicts present in the run get a chip
+    assert 'data-level="FAIL"' in page and 'data-level="PASS"' in page

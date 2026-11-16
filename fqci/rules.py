@@ -139,7 +139,7 @@ def _ev(node, ns: dict):
     if isinstance(node, ast.Compare):
         left = _ev(node.left, ns)
         result = True
-        for op, comp in zip(node.ops, node.comparators):
+        for op, comp in zip(node.ops, node.comparators, strict=True):
             right = _ev(comp, ns)
             if isinstance(op, ast.Is):
                 ok = left is right

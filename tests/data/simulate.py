@@ -31,7 +31,7 @@ def qual(n, start, end, sd=3):
 
 def mutate(s, q):
     return "".join(random.choice("ACGT") if random.random() < 10 ** (-qq / 10) else b
-                   for b, qq in zip(s, q))
+                   for b, qq in zip(s, q, strict=True))
 
 
 def rec(name, s, q):

@@ -12,6 +12,7 @@ from .interpret import group, interpret_sample, natural_key
 import zipfile
 
 from .parser import discover
+from .html_report import to_html
 from .report import to_json, to_markdown
 from .rules import RuleError, available_profiles, load_profile
 
@@ -102,13 +103,14 @@ def _run(args) -> int:
         out.mkdir(parents=True, exist_ok=True)
         (out / "fqci_report.md").write_text(to_markdown(res, prof, args.title))
         (out / "fqci_report.json").write_text(to_json(res, prof))
+        (out / "fqci_report.html").write_text(to_html(res, prof, args.title), encoding="utf-8")
         real = [r for r in res if not r.undetermined]
         (out / "fastp_commands.sh").write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(r.fastp_command for r in real) + "\n")
         (out / "fastp_params.json").write_text(json.dumps({r.sample: r.fastp_params for r in real}, indent=2))
         for r in res:
             print(f"{r.sample}\t{'UNASSIGNED' if r.undetermined else r.worst.upper()}")
-        print(f"report: {out / 'fqci_report.md'}", file=sys.stderr)
+        print(f"report: {out / 'fqci_report.md'} and {out / 'fqci_report.html'}", file=sys.stderr)
         return 0
     if args.cmd == "compare":
         Path(args.out).write_text(compare(discover(args.before), discover(args.after), prof,
