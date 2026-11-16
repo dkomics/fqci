@@ -72,11 +72,17 @@ def main(argv=None) -> int:
 
     sub.add_parser("profiles", help="list available profiles")
     a.add_argument("--threads", type=int, default=4, help="fastp --thread value in the generated commands")
-    g = a.add_argument_group("AI summary (optional; advisory, needs network and an API key)")
-    g.add_argument("--ai-summary", action="store_true",
-                   help="add a plain-language AI summary per sample and for the run")
+    g = a.add_argument_group("AI summary (optional, advisory)")
+    route = g.add_mutually_exclusive_group()
+    route.add_argument("--ai-summary", action="store_true",
+                       help="add a plain-language AI summary per sample and for the run (needs an API key)")
+    route.add_argument("--ai-export", action="store_true",
+                       help="no API key: write fqci_ai_prompt.txt to paste into a Claude chat")
+    route.add_argument("--ai-import", metavar="REPLY",
+                       help="no API key: read the chat's reply (saved to a file) into the reports")
     g.add_argument("--ai-provider", default="anthropic", help="AI provider (default: anthropic)")
-    g.add_argument("--ai-model", help="model ID (default: claude-sonnet-5-5)")
+    g.add_argument("--ai-model", help="model ID (default: claude-sonnet-5-5); with --ai-import, the "
+                   "model you used in the chat, recorded in the report")
     g.add_argument("--ai-prompt", help="use this prompt file instead of the built-in one")
     g.add_argument("--anonymise", action="store_true",
                    help="replace sample names with S01, S02, ... before sending")
@@ -106,6 +112,33 @@ def _ai(args, res, prof, kw, out):
     return ai, None
 
 
+def _ai_export(args, res, prof, kw, out):
+    from . import ai_summary as A
+    prep = A.prepare(res, prof, anonymise=args.anonymise, prompt_path=args.ai_prompt, **kw)
+    prompt_file, _ = A.export(prep, out)
+    print(f"fqci: AI prompt written to {prompt_file}\n"
+          "      Paste it into a Claude chat (or attach the file), save the reply as e.g. reply.json, then run\n"
+          "      the same command with --ai-import reply.json instead of --ai-export.", file=sys.stderr)
+
+
+def _ai_import(args, res, prof, kw, out):
+    """Import errors stop the run (exit 2): the user asked for this reply to be checked and used."""
+    from . import ai_summary as A
+    export_path = out / A.EXPORT_FILE
+    anonymise = args.anonymise
+    if export_path.exists():  # use the export's setting, so --anonymise need not be repeated
+        anonymise = bool(json.loads(export_path.read_text(encoding="utf-8")).get("anonymise", anonymise))
+    prep = A.prepare(res, prof, anonymise=anonymise, prompt_path=args.ai_prompt, **kw)
+    try:
+        ai = A.import_reply(args.ai_import, str(export_path), prep, model=args.ai_model)
+    except A.AIError as e:
+        raise ValueError(f"--ai-import: {e}") from None
+    (out / "fqci_ai_summary.json").write_text(json.dumps(ai.to_dict(), indent=1))
+    for w in ai.warnings + [w for s in ai.samples.values() for w in s.warnings]:
+        print(f"fqci: AI check: {w}", file=sys.stderr)
+    return ai
+
+
 def _run(args) -> int:
     if args.cmd == "profiles":
         for n in available_profiles():
@@ -130,6 +163,10 @@ def _run(args) -> int:
         ai, ai_error = None, None
         if args.ai_summary:
             ai, ai_error = _ai(args, res, prof, kw, out)
+        elif args.ai_export:
+            _ai_export(args, res, prof, kw, out)
+        elif args.ai_import:
+            ai = _ai_import(args, res, prof, kw, out)
         md = to_markdown(res, prof, args.title)
         if ai is not None:
             md += "\n" + ai_md(ai) + "\n"

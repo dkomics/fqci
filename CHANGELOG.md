@@ -10,6 +10,9 @@ the command-line interface, profile format or outputs between minor releases.
   Advisory only: rule-based findings stay authoritative. Replies are schema-checked, cited rule
   IDs are verified, unverifiable numbers are flagged, `--anonymise` keeps sample names local, and
   the exact request is saved. Without the flag fqci makes no network calls.
+- No API key needed: `--ai-export` writes a prompt to paste into a Claude chat; `--ai-import
+  REPLY` checks the saved reply against the export and the current run and adds it to the
+  reports. Number checks are per sample and read "million"/"thousand" at full value.
 
 ## 0.2.0 (2026-11-16)
 

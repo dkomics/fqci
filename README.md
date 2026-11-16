@@ -73,14 +73,27 @@ export ANTHROPIC_API_KEY=...           # your API key
 fqci interpret qc_raw/ -p wgs_isolate --genome-size 4.03e6 --ai-summary --anonymise -o fqci_out
 ```
 
+**Without an API key**, use any Claude chat (for example with a Claude subscription):
+
+```bash
+fqci interpret qc_raw/ ... --ai-export --anonymise -o fqci_out     # writes fqci_out/fqci_ai_prompt.txt
+# paste fqci_ai_prompt.txt into a Claude chat (or attach it); save the reply as reply.json
+fqci interpret qc_raw/ ... --ai-import reply.json -o fqci_out      # same inputs, options and -o folder
+```
+
+The import applies the same checks as the API route, accepts replies wrapped in code fences,
+refuses a reply that was exported from different data, options or prompt, and records the
+source as "manual (chat)" (`--ai-model` to record which model you used).
+
 - **What is sent:** metrics, findings, verdicts and fastp options in JSON, never reads or file
   names. `--anonymise` replaces sample names with S01, S02, ... before sending. The exact request
   is saved as `fqci_ai_request.json`.
 - **The prompt** is fixed and versioned (`fqci/prompts/findings_v1.md`); `--ai-prompt FILE`
   uses your own. Model: `claude-sonnet-5-5` by default (`--ai-model` to change).
 - **Checks on the reply:** it must match a JSON schema; rule IDs it cites must exist in that
-  sample's findings (others are removed); numbers it quotes must appear in the input (others are
-  flagged "verify before use" in the report).
+  sample's findings (others are removed); numbers in a sample's summary must appear in that
+  sample's data or the run-level figures, with "1.9 million" read as 1,900,000 (others are
+  flagged "verify before use" in the report); samples it leaves out are reported.
 - **Output:** a labelled box above the findings of each sample in the HTML report, a run-level
   box under the run summary, a section in the Markdown report, and `fqci_ai_summary.json` with
   the record (provider, model, prompt name and hash, date, token use).

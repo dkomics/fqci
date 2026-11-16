@@ -9,7 +9,8 @@ fixed, versioned prompt to a language model, and checks the reply before it is s
 - numbers it quotes must appear in the input (others are listed as unverified).
 
 Sample names can be replaced by codes (S01, S02, ...) before anything leaves the machine.
-Providers are pluggable; Anthropic is implemented first.
+Two routes: an API provider (Anthropic first; pluggable), or a manual route with no API key:
+--ai-export writes a prompt to paste into a chat, --ai-import reads the saved reply back.
 """
 from __future__ import annotations
 
@@ -219,13 +220,35 @@ def _numbers_in(obj) -> set[str]:
     return out
 
 
+_SCALED_RE = re.compile(r"(?<![A-Za-z_\d.])(-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(million|thousand|billion)\b",
+                        re.I)
+_SCALE = {"thousand": 1e3, "million": 1e6, "billion": 1e9}
+
+
 def _quoted_numbers(text: str) -> list[str]:
-    return [m for m in _NUM_RE.findall(text)]
+    """Numbers as written; '1.9 million' becomes '1,900,000' so it is checked at full value."""
+    scaled = []
+    for m in _SCALED_RE.finditer(text):
+        v = _num(m.group(1))
+        if v is not None:
+            scaled.append(f"{v * _SCALE[m.group(2).lower()]:,.0f}")
+    rest = _SCALED_RE.sub(" ", text)
+    return scaled + _NUM_RE.findall(rest)
 
 
 def _known(n: str, allowed: set[str]) -> bool:
     v = _num(n)
-    return v is None or bool(_numbers_in(v) & allowed)
+    if v is None:
+        return True
+    if v >= 1e5:  # large counts are quoted rounded ("about 2.3 million"): accept within 2%
+        return any(abs(v - a) <= 0.02 * a for a in _floats(allowed) if a >= 1e5)
+    # the quoted value must equal an input figure or one of its rounded forms ("93" for 93.4);
+    # rounding the quoted value as well would let 78.8 pass because some other figure is 79
+    return f"{v:g}" in allowed or f"{v:.1f}" in allowed
+
+
+def _floats(allowed: set[str]) -> list[float]:
+    return [v for v in (_num(a) for a in allowed) if v is not None]
 
 
 @dataclass
@@ -259,7 +282,12 @@ def validate(reply_text: str, payload: dict, ids: dict[str, str]) -> tuple[str, 
     if not isinstance(data, dict) or not isinstance(data.get("samples"), list) \
             or not isinstance(data.get("run_summary"), str):
         raise AIError("the reply does not match the expected structure")
-    allowed = _numbers_in(payload) | {str(i) for i in range(0, 11)}
+    # numbers a sample's text may quote: that sample's own data plus run-level figures
+    run_level = {k: v for k, v in payload.items() if k != "samples"}
+    small = {str(i) for i in range(0, 11)} | {f"{float(i):.1f}" for i in range(0, 11)}
+    base = _numbers_in(run_level) | small
+    per_sample = {s["id"]: base | _numbers_in(s) for s in payload["samples"]}
+    allowed = base | _numbers_in(payload)  # the run summary may quote any sample's figures
     run_warn: list[str] = []
     rules_by_id = {s["id"]: {f["rule_id"] for f in s["findings"]} for s in payload["samples"]}
     out: dict[str, SampleSummary] = {}
@@ -278,7 +306,7 @@ def validate(reply_text: str, payload: dict, ids: dict[str, str]) -> tuple[str, 
             warns.append(f"removed rule IDs not among this sample's findings: {', '.join(bad)}")
         steps = [str(s) for s in item.get("next_steps", [])][:3]
         text = str(item.get("summary", ""))
-        unverified = sorted({n for n in _quoted_numbers(" ".join([text, *steps])) if not _known(n, allowed)})
+        unverified = sorted({n for n in _quoted_numbers(" ".join([text, *steps])) if not _known(n, per_sample[sid])})
         if unverified:
             warns.append("numbers not found in the input (verify before use): " + ", ".join(unverified))
         out[sid] = SampleSummary(id=sid, sample=ids[sid], summary=text,
@@ -294,28 +322,108 @@ def validate(reply_text: str, payload: dict, ids: dict[str, str]) -> tuple[str, 
     return rs, out, run_warn
 
 
-def summarise(results: list[SampleResult], profile: Profile, provider: Provider, *,
-              genome_size: float | None = None, expected_gc: float | None = None,
-              anonymise: bool = False, prompt_path: str | None = None) -> tuple[AISummary, dict]:
-    """Build the payload, call the provider once, validate the reply. Returns (summary, payload sent)."""
+@dataclass
+class Prepared:
+    """Everything needed to ask a model, and to check and restore its answer later."""
+    system: str
+    user: str
+    payload: dict
+    ids: dict[str, str]
+    prompt_name: str
+    prompt_sha256: str
+    anonymise: bool
+
+
+def prepare(results: list[SampleResult], profile: Profile, *, genome_size: float | None = None,
+            expected_gc: float | None = None, anonymise: bool = False,
+            prompt_path: str | None = None) -> Prepared:
     prompt, prompt_name, prompt_hash = load_prompt(prompt_path)
     payload, ids = build_payload(results, profile, genome_size, expected_gc, anonymise)
     user = ("Here is the fqci output for one sequencing run. Follow the instructions and return "
             "JSON only.\n\n" + json.dumps(payload, indent=1))
-    max_tokens = min(16000, 1500 + 400 * len(payload["samples"]))
-    text, meta = provider.generate(prompt, user, OUTPUT_SCHEMA, max_tokens)
-    rs, samples, warns = validate(text, payload, ids)
+    return Prepared(prompt, user, payload, ids, prompt_name, prompt_hash, anonymise)
+
+
+def finish(prep: Prepared, text: str, provider: str, model: str, meta: dict | None = None) -> AISummary:
+    """Validate a reply against the prepared request and restore sample names."""
+    meta = meta or {}
+    rs, samples, warns = validate(text, prep.payload, prep.ids)
     by_name = {s.sample: s for s in samples.values()}
-    if anonymise:  # put real names back into the text shown locally
+    if prep.anonymise:  # put real names back into the text shown locally
         for s in by_name.values():
-            s.summary = _deanon(s.summary, ids)
-            s.next_steps = [_deanon(x, ids) for x in s.next_steps]
-        rs = _deanon(rs, ids)
-    record = {"provider": provider.name, "model": meta.get("model", provider.model),
-              "prompt": prompt_name, "prompt_sha256": prompt_hash, "fqci_version": __version__,
-              "anonymised": anonymise, "generated": _dt.datetime.now().isoformat(timespec="seconds"),
+            s.summary = _deanon(s.summary, prep.ids)
+            s.next_steps = [_deanon(x, prep.ids) for x in s.next_steps]
+        rs = _deanon(rs, prep.ids)
+    record = {"provider": provider, "model": meta.get("model", model),
+              "prompt": prep.prompt_name, "prompt_sha256": prep.prompt_sha256, "fqci_version": __version__,
+              "anonymised": prep.anonymise, "generated": _dt.datetime.now().isoformat(timespec="seconds"),
               "input_tokens": meta.get("input_tokens"), "output_tokens": meta.get("output_tokens")}
-    return AISummary(run_summary=rs, samples=by_name, record=record, warnings=warns), payload
+    return AISummary(run_summary=rs, samples=by_name, record=record, warnings=warns)
+
+
+def summarise(results: list[SampleResult], profile: Profile, provider: Provider, *,
+              genome_size: float | None = None, expected_gc: float | None = None,
+              anonymise: bool = False, prompt_path: str | None = None) -> tuple[AISummary, dict]:
+    """Build the request, call the provider once, validate the reply. Returns (summary, payload sent)."""
+    prep = prepare(results, profile, genome_size=genome_size, expected_gc=expected_gc,
+                   anonymise=anonymise, prompt_path=prompt_path)
+    max_tokens = min(16000, 1500 + 400 * len(prep.payload["samples"]))
+    text, meta = provider.generate(prep.system, prep.user, OUTPUT_SCHEMA, max_tokens)
+    return finish(prep, text, provider.name, provider.model, meta), prep.payload
+
+
+# ---------------------------------------------------------------- manual route (no API key)
+EXPORT_FILE = "fqci_ai_export.json"     # kept locally: payload, id mapping, prompt identity
+PROMPT_FILE = "fqci_ai_prompt.txt"      # pasted into a chat
+
+
+def chat_prompt(prep: Prepared) -> str:
+    """One self-contained text for a chat window: instructions, reply format, data."""
+    return (prep.system.rstrip() + "\n\n"
+            "Reply format: return ONLY a JSON object (no code fences, no text before or after) that "
+            "matches this JSON Schema:\n" + json.dumps(OUTPUT_SCHEMA, indent=1) + "\n\n" + prep.user + "\n")
+
+
+def export(prep: Prepared, outdir) -> tuple[str, str]:
+    """Write the chat prompt and the local record needed to import the reply. Returns their paths."""
+    from pathlib import Path
+    out = Path(outdir)
+    (out / PROMPT_FILE).write_text(chat_prompt(prep), encoding="utf-8")
+    (out / EXPORT_FILE).write_text(json.dumps({
+        "fqci_version": __version__, "prompt": prep.prompt_name, "prompt_sha256": prep.prompt_sha256,
+        "anonymise": prep.anonymise, "ids": prep.ids, "payload": prep.payload}, indent=1), encoding="utf-8")
+    return str(out / PROMPT_FILE), str(out / EXPORT_FILE)
+
+
+def extract_json(text: str) -> str:
+    """Accept a reply pasted from a chat: strip code fences and any text around the JSON object."""
+    t = text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+    if m:
+        t = m.group(1).strip()
+    if not t.startswith("{"):
+        i, j = t.find("{"), t.rfind("}")
+        if i == -1 or j <= i:
+            raise AIError("no JSON object found in the reply file")
+        t = t[i:j + 1]
+    return t
+
+
+def import_reply(reply_path: str, export_path: str, current: Prepared, model: str | None = None) -> AISummary:
+    """Check a chat reply against the export it answers and the current run, then build the summary."""
+    try:
+        with open(export_path, encoding="utf-8") as fh:
+            exp = json.load(fh)
+    except FileNotFoundError:
+        raise AIError(f"{export_path} not found: run with --ai-export first, using the same -o folder") from None
+    if exp.get("payload") != current.payload or exp.get("prompt_sha256") != current.prompt_sha256:
+        raise AIError("the reply was exported from different data, options or prompt than this run; "
+                      "re-run --ai-export with the same inputs and options, then ask again")
+    with open(reply_path, encoding="utf-8") as fh:
+        text = extract_json(fh.read())
+    prep = Prepared(current.system, current.user, exp["payload"], exp["ids"], exp["prompt"],
+                    exp["prompt_sha256"], exp["anonymise"])
+    return finish(prep, text, "manual (chat)", model or "not recorded")
 
 
 def _deanon(text: str, ids: dict[str, str]) -> str:

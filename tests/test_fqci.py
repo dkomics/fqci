@@ -1075,3 +1075,87 @@ def test_anthropic_provider_stop_reason(monkeypatch):
     monkeypatch.setattr(prov._client.messages, "create", lambda **kw: R())
     with pytest.raises(A.AIError, match="stopped early"):
         prov.generate("s", "u", {}, 10)
+
+
+# ---- manual route: --ai-export / --ai-import (no API key)
+def _fake_reply_for(payload, fence=True):
+    body = _json.dumps({"run_summary": "Run ok.", "samples": [
+        {"id": s["id"], "summary": f"{s['id']}: {s['verdict']}.", "rule_ids": [], "next_steps": []}
+        for s in payload["samples"]]})
+    return f"Here is the JSON:\n```json\n{body}\n```\nHope this helps." if fence else body
+
+
+def test_ai_export_writes_paste_ready_prompt(tmp_path):
+    res, prof = _two_samples()
+    prep = A.prepare(res, prof, genome_size=4.41e6, anonymise=True)
+    prompt_file, export_file = A.export(prep, tmp_path)
+    text = Path(prompt_file).read_text(encoding="utf-8")
+    assert "authoritative" in text and '"run_summary"' in text and "return ONLY a JSON object" in text
+    assert "lowdepth_S1" not in text and '"id": "S01"' in text          # anonymised in what is pasted
+    exp = _json.loads(Path(export_file).read_text(encoding="utf-8"))
+    assert exp["ids"] == {"S01": "lowdepth_S1", "S02": "clean_S2"}      # mapping stays local
+
+
+def test_extract_json_from_chat_reply():
+    assert A.extract_json('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert A.extract_json('Sure! {"a": {"b": 2}} Done.') == '{"a": {"b": 2}}'
+    with pytest.raises(A.AIError):
+        A.extract_json("no json here")
+
+
+def test_ai_import_roundtrip_and_mismatch(tmp_path):
+    res, prof = _two_samples()
+    prep = A.prepare(res, prof, genome_size=4.41e6, anonymise=True)
+    A.export(prep, tmp_path)
+    reply = tmp_path / "reply.txt"
+    reply.write_text(_fake_reply_for(prep.payload))
+    ai = A.import_reply(str(reply), str(tmp_path / A.EXPORT_FILE), prep, model="Claude (chat)")
+    assert ai.record["provider"] == "manual (chat)" and ai.record["model"] == "Claude (chat)"
+    assert ai.samples["lowdepth_S1"].summary.startswith("lowdepth_S1:")  # names restored
+    other = A.prepare(res[:1], prof, genome_size=4.41e6, anonymise=True)  # different run
+    with pytest.raises(A.AIError, match="different data"):
+        A.import_reply(str(reply), str(tmp_path / A.EXPORT_FILE), other)
+    with pytest.raises(A.AIError, match="run with --ai-export first"):
+        A.import_reply(str(reply), str(tmp_path / "missing.json"), prep)
+
+
+def test_ai_export_import_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    out = tmp_path / "o"
+    base = ["interpret", str(D / "raw"), "-o", str(out), "--genome-size", "4e5"]
+    assert main(base + ["--ai-export", "--anonymise"]) == 0
+    assert "Paste it into a Claude chat" in capsys.readouterr().err
+    exp = _json.loads((out / A.EXPORT_FILE).read_text())
+    reply = tmp_path / "reply.json"
+    reply.write_text(_fake_reply_for(exp["payload"]))
+    assert main(base + ["--ai-import", str(reply)]) == 0                 # --anonymise read from the export
+    page = (out / "fqci_report.html").read_text()
+    assert "manual (chat)" in page and "AI summary · generated, advisory" in page
+    bad = tmp_path / "bad.json"
+    bad.write_text("I could not do this.")
+    assert main(base + ["--ai-import", str(bad)]) == 2
+    assert "no JSON object found" in capsys.readouterr().err
+
+
+def test_ai_routes_are_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["interpret", str(D / "raw"), "-o", str(tmp_path), "--ai-summary", "--ai-export"])
+
+
+def test_ai_numbers_checked_per_sample_and_scaled():
+    res, prof = _two_samples()
+    payload, ids = A.build_payload(res, prof, 4.41e6, None)
+    own = A._numbers_in(payload["samples"][0]) | A._numbers_in({k: v for k, v in payload.items() if k != "samples"})
+    other_depth = next(v for v in payload["samples"][1]["metrics"].values()   # a figure only clean_S2 has
+                       if isinstance(v, float) and f"{v:g}" not in own and v < 1e5)
+    own_reads = payload["samples"][0]["metrics"]["reads_or_pairs"]           # belongs to lowdepth_S1
+    reply = _json.dumps({"run_summary": f"Depths up to {other_depth}x.", "samples": [
+        {"id": "lowdepth_S1", "summary": f"Depth {other_depth}x; about {own_reads / 1e6:.1f} million reads; "
+                                          "roughly 1.9 million pairs lost.", "rule_ids": [], "next_steps": []},
+        {"id": "clean_S2", "summary": "Fine.", "rule_ids": [], "next_steps": []}]})
+    _, samples, warns = A.validate(reply, payload, ids)
+    w = " ".join(samples["lowdepth_S1"].warnings)
+    assert str(other_depth) in w             # another sample's number is not accepted for this one
+    assert "1,900,000" in w                  # '1.9 million' checked at full value
+    assert f"{own_reads:,}" not in w and "100,000" not in w   # own count, rounded, is accepted
+    assert not any("run summary" in x for x in warns)          # run summary may quote any sample
