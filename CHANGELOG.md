@@ -3,26 +3,29 @@
 This project follows [Semantic Versioning](https://semver.org/). Versions below 1.0 may change
 the command-line interface, profile format or outputs between minor releases.
 
-## Unreleased (0.3.0.dev0)
+## 0.3.0 (2026-11-17)
 
 - Optional AI summary (`--ai-summary`): plain-language summaries per sample and for the run, from
-  a fixed, versioned prompt (`findings_v1`), using the Anthropic API (`pip install "fqci[ai]"`).
-  Advisory only: rule-based findings stay authoritative. Replies are schema-checked, cited rule
-  IDs are verified, unverifiable numbers are flagged, `--anonymise` keeps sample names local, and
-  the exact request is saved. Without the flag fqci makes no network calls.
+  a fixed, versioned prompt (`findings_v1`), using the Anthropic API (`pip install "fqci[ai]"`,
+  `ANTHROPIC_API_KEY`; default model `claude-sonnet-5-5`). Advisory only: the rule-based findings,
+  verdicts and fastp commands stay authoritative. Replies are schema-checked; cited rule IDs must
+  exist in that sample's findings; numbers in a sample's summary must appear in that sample's data
+  or the run-level figures (others are flagged); `--anonymise` replaces sample names with codes
+  before anything is sent; the exact request is saved. Without an AI option fqci makes no network
+  calls, and an API failure never stops the rule-based reports.
 - No API key needed: `--ai-export` writes a prompt to paste into a Claude chat; `--ai-import
-  REPLY` checks the saved reply against the export and the current run and adds it to the
-  reports. Number checks are per sample and read "million"/"thousand" at full value.
+  REPLY` checks the saved reply against the export and the current run (same data, options and
+  prompt) and adds it to the reports.
+- Cost: after an API run fqci prints the tokens used and an estimated cost at list price, and adds
+  the same line to the reports and `fqci_ai_summary.json`. Validated against the Claude Console:
+  four runs estimated at about $0.55-0.60, billed $0.56.
 - Run summary: the adapter-dimer split sentence now names samples between 1% and 10% (it used to
   leave them out, so the counts did not add up), and says "1 sample at 33%" instead of "1 samples
   at 33-33%".
-- Prompt `findings_v1`: `rule_ids` must include the secondary findings a summary describes, not
-  only the primary ones. The prompt hash changes, so exports made before this change cannot be
-  imported; re-export.
-- AI summary cost: after an API run fqci prints the tokens used and an estimated cost at list
-  price (Sonnet 5.5, Opus 5.5, Haiku 5.5, Fable 5.2; prices as of 2026-11-17), and adds the same
-  line to the Markdown and HTML reports and `fqci_ai_summary.json`. Models without a listed price
-  show tokens only.
+- Validated on real data with both routes: a 27-sample *V. cholerae* run (Nepal paired-end and
+  Haiti single-end) and a 24-sample *M. tuberculosis* MiSeq run. All automatic checks passed, and
+  the summaries were checked by hand against the data sent. Known limit: rankings across samples
+  written in prose ("the most pronounced in the run") cannot be checked automatically.
 
 ## 0.2.0 (2026-11-16)
 
