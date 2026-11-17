@@ -519,7 +519,43 @@ def test_run_summary_dimer_batch(raw):
     res = [interpret_sample("sim", group(raw)["sim"], prof)]
     res += [interpret_sample(f"m{i}", _pair(f"m{i}"), prof) for i in range(3)]
     L = "\n".join(run_summary(res))
-    assert "Adapter dimers split the run in two: 1 samples at 33-33% and 3 below 1%" in L
+    assert "Adapter dimers split the run in two: 1 sample at 33% and 3 below 1%." in L
+    assert "in between" not in L
+
+
+def test_run_summary_dimer_split_names_samples_in_between():
+    """Real Nepal/Haiti cholera run: 12 samples at 18-43%, Vc13 at 1.3%, 14 below 1%
+    (42.53: the real Vc1 value, shown as 42.5 elsewhere).
+    The sentence used to drop Vc13 (12 + 14 = 26 of 27)."""
+    from fqci.report import run_summary
+    prof = load_profile("wgs_isolate")
+    hi = [42.53, 31.2, 17.8, 22.5, 29.1, 23.5, 30.3, 27.3, 41.3, 20.6, 35.7, 25.3]
+    lo = [0.5, 0.2, 0.4, 0.6, 0.2, 0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    names = [f"Vc{i}_Nepal" for i in range(1, 25)] + ["Vc_1786_Haiti_SE", "Vc_1792_Haiti_SE", "Vc_1798_Haiti_SE"]
+    res = []
+    for name, d in zip(names, hi + [1.3] + lo):
+        r = interpret_sample(name, _pair(name), prof)
+        r.metrics["pair"]["pair_dimer_pct"] = d
+        res.append(r)
+    L = "\n".join(run_summary(res))
+    assert ("Adapter dimers split the run in two: 12 samples at 18-43% and 14 below 1%; "
+            "1 in between (Vc13_Nepal 1.3%). That pattern usually means a library-prep batch") in L
+    from fqci.ai_summary import build_payload
+    payload, _ = build_payload(res, prof, 4.03e6, 47.5, anonymise=True)
+    line = next(x for x in payload["run_summary_from_rules"] if "split the run" in x)
+    assert "1 in between (S13 1.3%)" in line and "Vc" not in line
+    # many in between: list five, count the rest
+    for r, d in zip(res[12:20], [1.5, 2, 3, 4, 5, 6, 7, 8]):
+        r.metrics["pair"]["pair_dimer_pct"] = d
+    L = "\n".join(run_summary(res))
+    assert "7 below 1%; 8 in between (Vc13_Nepal 1.5%, Vc14_Nepal 2.0%, Vc15_Nepal 3.0%, " in L
+    assert "Vc17_Nepal 5.0% and 3 more)." in L
+
+
+def test_prompt_asks_for_secondary_rule_ids():
+    from fqci.ai_summary import load_prompt
+    text, _, _ = load_prompt()
+    assert "including secondary findings" in text
 
 
 # ================================================================ code-review fixes

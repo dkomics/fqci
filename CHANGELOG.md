@@ -13,6 +13,12 @@ the command-line interface, profile format or outputs between minor releases.
 - No API key needed: `--ai-export` writes a prompt to paste into a Claude chat; `--ai-import
   REPLY` checks the saved reply against the export and the current run and adds it to the
   reports. Number checks are per sample and read "million"/"thousand" at full value.
+- Run summary: the adapter-dimer split sentence now names samples between 1% and 10% (it used to
+  leave them out, so the counts did not add up), and says "1 sample at 33%" instead of "1 samples
+  at 33-33%".
+- Prompt `findings_v1`: `rule_ids` must include the secondary findings a summary describes, not
+  only the primary ones. The prompt hash changes, so exports made before this change cannot be
+  imported; re-export.
 
 ## 0.2.0 (2026-11-16)
 

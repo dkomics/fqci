@@ -22,6 +22,10 @@ def _fmt(v, nd=1):
     return str(v)
 
 
+def _n(k: int, word: str = "sample") -> str:
+    return f"{k} {word}" + ("" if k == 1 else "s")
+
+
 def run_summary(results: list[SampleResult]) -> list[str]:
     """Run-level view: verdict counts, findings shared by most samples, and subsets."""
     real = [r for r in results if not r.undetermined]
@@ -57,10 +61,17 @@ def run_summary(results: list[SampleResult]) -> list[str]:
     dimers = [(r.metrics["pair"].get("pair_dimer_pct") or 0, r.sample) for r in real]
     hi = [d for d in dimers if d[0] >= 10]
     lo = [d for d in dimers if d[0] < 1]
+    mid = sorted((d for d in dimers if 1 <= d[0] < 10), key=lambda d: natural_key(d[1]))
     if hi and lo:
-        L += ["", f"Adapter dimers split the run in two: {len(hi)} samples at "
-              f"{min(d for d, _ in hi):.0f}-{max(d for d, _ in hi):.0f}% and {len(lo)} below 1%. "
-              "That pattern usually means a library-prep batch, not individual samples."]
+        a, b = min(d for d, _ in hi), max(d for d, _ in hi)
+        rng = f"{a:.0f}%" if f"{a:.0f}" == f"{b:.0f}" else f"{a:.0f}-{b:.0f}%"
+        msg = f"Adapter dimers split the run in two: {_n(len(hi))} at {rng} and {len(lo)} below 1%"
+        if mid:
+            shown = ", ".join(f"{name} {d:.1f}%" for d, name in mid[:5])
+            if len(mid) > 5:
+                shown += f" and {len(mid) - 5} more"
+            msg += f"; {len(mid)} in between ({shown})"
+        L += ["", msg + ". That pattern usually means a library-prep batch, not individual samples."]
     cov = sorted((r.metrics["pair"]["est_coverage"], r.sample) for r in real
                  if r.metrics["pair"].get("est_coverage") is not None)
     if cov:

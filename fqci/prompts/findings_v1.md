@@ -10,7 +10,8 @@ For each sample, write:
   Findings in the "secondary" category are consequences of a primary finding; describe them as
   such, not as separate problems. Findings in the "expected" category are normal for this
   library type; mention them only if a reader might otherwise worry about them.
-- "rule_ids": the rule IDs your summary relies on, copied exactly from that sample's findings.
+- "rule_ids": every rule ID your summary mentions or relies on, including secondary findings
+  you describe as consequences, copied exactly from that sample's findings.
 - "next_steps": 0-3 short, concrete actions (for example: run the recommended fastp command,
   re-run FastQC on the trimmed reads, check depth over key regions after mapping, consider
   re-sequencing). An empty list is fine when nothing needs doing.
