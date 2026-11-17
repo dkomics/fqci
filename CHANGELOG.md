@@ -19,6 +19,10 @@ the command-line interface, profile format or outputs between minor releases.
 - Prompt `findings_v1`: `rule_ids` must include the secondary findings a summary describes, not
   only the primary ones. The prompt hash changes, so exports made before this change cannot be
   imported; re-export.
+- AI summary cost: after an API run fqci prints the tokens used and an estimated cost at list
+  price (Sonnet 5.5, Opus 5.5, Haiku 5.5, Fable 5.2; prices as of 2026-11-17), and adds the same
+  line to the Markdown and HTML reports and `fqci_ai_summary.json`. Models without a listed price
+  show tokens only.
 
 ## 0.2.0 (2026-11-16)
 

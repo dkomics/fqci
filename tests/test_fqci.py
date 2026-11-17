@@ -1045,6 +1045,54 @@ def test_ai_cli_with_fake_provider(tmp_path, monkeypatch):
     assert "AI summary · generated, advisory" in (out / "fqci_report.html").read_text()
 
 
+def test_ai_cost_estimate():
+    assert A.estimate_cost("claude-sonnet-5-5", 20_000, 4_000) == pytest.approx(0.08)
+    assert A.estimate_cost("claude-sonnet-5-5-20261001", 1_000_000, 0) == pytest.approx(2.0)  # dated ID
+    assert A.estimate_cost("claude-opus-5-5", 0, 1_000_000) == pytest.approx(20.0)
+    assert A.estimate_cost("claude-haiku-5-5", 100_000, 0) == pytest.approx(0.01)
+    assert A.estimate_cost("claude-haiku-5-5", 200_000, 0) == pytest.approx(0.10)  # long-prompt tier
+    assert A.estimate_cost("claude-sonnet-5", 1_000, 1_000) is None  # not "claude-sonnet-5-5"
+    assert A.estimate_cost("someone-elses-model", 1, 1) is None
+    assert A.estimate_cost("claude-sonnet-5-5", None, 5) is None
+
+
+def test_ai_cost_line_in_record_and_reports(tmp_path, monkeypatch, capsys):
+    from fqci.html_report import to_html
+    res, prof = _two_samples()
+    fake = FakeProvider()
+    fake.model = "claude-sonnet-5-5"
+    orig = fake.generate
+    def gen(*a):
+        text, meta = orig(*a)
+        return text, {**meta, "input_tokens": 21_345, "output_tokens": 3_210}
+    fake.generate = gen
+    ai, _ = A.summarise(res, prof, fake)
+    assert ai.record["cost_usd_estimate"] == pytest.approx(21_345 * 2e-6 + 3_210 * 1e-5)
+    line = A.cost_line(ai.record)
+    assert line.startswith("Tokens: 21,345 input + 3,210 output; estimated cost $0.075 at list price")
+    assert "($2 / $10 per million tokens, prices as of " in line and "Console usage page is authoritative" in line
+    assert line in A.to_markdown(ai)
+    assert "estimated cost $0.075" in to_html(res, prof, "t", ai=ai)
+    # unknown model: tokens only
+    ai.record["model"], ai.record["cost_usd_estimate"] = "other-model", None
+    assert "No price on file for other-model" in A.cost_line(ai.record)
+    # CLI prints the line after the run
+    monkeypatch.setitem(A.PROVIDERS, "fake", lambda model=None: fake)
+    assert main(["interpret", str(D / "raw"), "-o", str(tmp_path / "o"), "--ai-summary",
+                 "--ai-provider", "fake"]) == 0
+    assert "fqci: AI summary: Tokens: 21,345 input + 3,210 output; estimated cost $0.075" in capsys.readouterr().err
+
+
+def test_ai_manual_reply_has_no_cost_line(tmp_path):
+    res, prof = _two_samples()
+    prep = A.prepare(res, prof)
+    reply = _json.dumps({"run_summary": "ok", "samples": [{"id": s["id"], "summary": "fine", "rule_ids": [],
+                                                          "next_steps": []} for s in prep.payload["samples"]]})
+    ai = A.finish(prep, reply, "manual (chat)", "Claude (chat)")
+    assert A.cost_line(ai.record) is None and "cost_usd_estimate" not in ai.record
+    assert "Tokens:" not in A.to_markdown(ai)
+
+
 def test_ai_unknown_provider():
     with pytest.raises(A.AIError, match="unknown AI provider"):
         A.get_provider("nope")
@@ -1099,6 +1147,7 @@ def test_anthropic_provider_request_shape(monkeypatch):
     assert b["output_config"]["format"]["schema"] == A.OUTPUT_SCHEMA
     assert "temperature" not in b  # Sonnet 5 models reject non-default sampling settings
     assert ai.record["input_tokens"] == 123 and set(ai.samples) == {"lowdepth_S1", "clean_S2"}
+    assert ai.record["cost_usd_estimate"] == pytest.approx(123 * 2e-6 + 45 * 1e-5)
 
 
 def test_anthropic_provider_stop_reason(monkeypatch):

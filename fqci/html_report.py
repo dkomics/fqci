@@ -329,6 +329,10 @@ def to_html(results: list[SampleResult], profile: Profile, title: str = "FastQC 
                    f'{" · sample names anonymised before sending" if rec.get("anonymised") else ""}. '
                    "The rule-based findings and verdicts are authoritative; each sample\u2019s AI summary "
                    "is under Findings by sample.</p></section>")
+        from .ai_summary import cost_line
+        cl = cost_line(rec)
+        if cl:
+            box[-1] = box[-1].removesuffix("</section>") + f'<p class="rec">{_e(cl)}</p></section>'
         parts.append("".join(box))
     elif ai_error:
         parts.append(f'<section class="ai"><span class="lab">AI summary</span><p class="chk">Requested but not '

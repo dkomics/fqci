@@ -97,6 +97,10 @@ source as "manual (chat)" (`--ai-model` to record which model you used).
 - **Output:** a labelled box above the findings of each sample in the HTML report, a run-level
   box under the run summary, a section in the Markdown report, and `fqci_ai_summary.json` with
   the record (provider, model, prompt name and hash, date, token use).
+- **Cost:** after an API run fqci prints the tokens used and an estimated cost at list price
+  (for example, about $0.08 for 27 samples with Sonnet 5.5); the same line appears in the reports.
+  It is an estimate from the published per-token prices; the Claude Console usage page is
+  authoritative. Replies imported with `--ai-import` have no cost line.
 - If the summary cannot be produced (no key, no network, API error), fqci says why and writes the
   rule-based reports as usual.
 - Treat it as advisory: it is not deterministic and is not part of the QC record.

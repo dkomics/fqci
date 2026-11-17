@@ -109,6 +109,9 @@ def _ai(args, res, prof, kw, out):
     (out / "fqci_ai_summary.json").write_text(json.dumps(ai.to_dict(), indent=1))
     for w in ai.warnings + [w for s in ai.samples.values() for w in s.warnings]:
         print(f"fqci: AI check: {w}", file=sys.stderr)
+    cl = A.cost_line(ai.record)
+    if cl:
+        print(f"fqci: AI summary: {cl}", file=sys.stderr)
     return ai, None
 
 
